@@ -16,7 +16,7 @@ TOTAL_SAMPLES       = 48        # 48 × 30 min = 24 hours (adjust as needed)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR     = PROJECT_ROOT / "data"
+DATA_DIR     = PROJECT_ROOT / "data-test"
 LOG_DIR      = PROJECT_ROOT / "logs"
 
 # ── GitHub ─────────────────────────────────────────────────────────────────────
