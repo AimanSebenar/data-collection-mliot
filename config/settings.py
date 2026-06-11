@@ -25,4 +25,4 @@ GITHUB_TOKEN  = ""   # or set env var GITHUB_TOKEN
 GITHUB_USER   = ""   # e.g. "your-username"
 GITHUB_REPO   = ""   # e.g. "rpi-sensor-data"
 GITHUB_BRANCH = "main"
-GITHUB_REMOTE_PATH = "data/"  # folder inside the repo where CSVs are stored
+GITHUB_REMOTE_PATH = "data-test/"  # folder inside the repo where CSVs are stored
