@@ -13,15 +13,7 @@ log = logging.getLogger(__name__)
 def read_motion(pin: int) -> bool:
     """
     Read the digital output of a PIR sensor.
-
-    Most PIR modules output HIGH (1) when motion is detected
-    and LOW (0) when idle.
-
-    Args:
-        pin: BCM GPIO pin number connected to the sensor's OUT pin.
-
-    Returns:
-        True if motion detected, False if not.
+    Most PIR modules output HIGH (1) when motion is detected, LOW (0) when idle.
     """
     try:
         state = GPIO.input(pin)

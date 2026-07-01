@@ -1,21 +1,20 @@
 """
 main.py
-Raspberry Pi 4 - Multi-Sensor Data Logger
+Raspberry Pi 4 - Real-time Occupancy Prediction
 Sensors: Motion (PIR), Temperature/Humidity (DHT22), Audio
-Sample rate: 30 minutes
-Output: CSV file auto-pushed to GitHub on completion
+Sample rate: 10 seconds
+Predictions: ML model (Random Forest, .pkl) + rule-based baseline
+Output: JSON payload sent to a Node-RED dashboard via HTTP POST
 """
 
 import time
-import csv
 import logging
-import os
 from datetime import datetime
-from pathlib import Path
 
 import RPi.GPIO as GPIO
 import adafruit_dht
-import board
+# import board
+from adafruit_blinka.microcontroller.bcm283x.pin import Pin
 
 from config.settings import (
     MOTION_PIN,
@@ -23,14 +22,15 @@ from config.settings import (
     DHT_PIN,
     SAMPLE_INTERVAL_SEC,
     TOTAL_SAMPLES,
-    DATA_DIR,
     LOG_DIR,
 )
 from sensors.motion_sensor import read_motion
 from sensors.audio_sensor import read_audio
 from sensors.dht_sensor import read_dht
-from utils.csv_writer import init_csv, write_row
-from utils.github_push import push_to_github
+from model.ml_predictor import predict_ml
+from model.baseline import predict_baseline
+from utils.nodered_sender import send_to_nodered
+from actuators.relay_led import setup_relay, pulse_led, relay_off
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -46,65 +46,90 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def setup_gpio(dht_sensor):
-    """Initialise GPIO and return the DHT device handle."""
+def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(MOTION_PIN, GPIO.IN)
     GPIO.setup(AUDIO_PIN, GPIO.IN)
+    setup_relay()
     log.info("GPIO initialised (BCM mode). Motion PIN=%d  Audio PIN=%d", MOTION_PIN, AUDIO_PIN)
-    return dht_sensor
 
 
-def collect_sample(dht_device):
+def collect_sample(dht_device) -> dict:
     """Read all three sensors and return a result dict."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    motion   = read_motion(MOTION_PIN)
+    motion    = read_motion(MOTION_PIN)
     temp, hum = read_dht(dht_device)
-    audio    = read_audio(AUDIO_PIN)
+    audio     = read_audio(AUDIO_PIN)
 
     sample = {
-        "timestamp":         timestamp,
-        "motion_detected":   motion,
-        "temperature_c":     temp,
-        "humidity_pct":      hum,
-        "audio_detected":    audio,
+        "timestamp":       timestamp,
+        "motion_detected": motion,
+        "temperature_c":   temp,
+        "humidity_pct":    hum,
+        "audio_detected":  audio,
     }
-    log.info("Sample → %s", sample)
     return sample
 
 
+def build_payload(sample: dict) -> dict:
+    """Run both predictors and assemble the JSON payload for Node-RED."""
+    ml_pred       = predict_ml(sample)
+    baseline_pred = predict_baseline(sample)
+
+    if ml_pred == 1:
+        log.info("ML model predicted occupied → pulsing LED for 1s")
+        pulse_led()
+
+    payload = {
+        "timestamp":            sample["timestamp"],
+        "motion_detected":      sample["motion_detected"],
+        "temperature_c":        sample["temperature_c"],
+        "humidity_pct":         sample["humidity_pct"],
+        "audio_detected":       sample["audio_detected"],
+        "occupancy_ml":         ml_pred,
+        "occupancy_baseline":   baseline_pred,
+        "agreement":            ml_pred == baseline_pred,
+    }
+    return payload
+
+
 def run():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    # One CSV file per run, named by start time
-    csv_path = DATA_DIR / f"sensor_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-    # Initialise DHT device once (reused across samples)
-    dht_device = adafruit_dht.DHT22(getattr(board, f"D{DHT_PIN}"))
+    dht_device = adafruit_dht.DHT22(Pin(DHT_PIN))
 
     try:
-        setup_gpio(dht_device)
-        init_csv(csv_path)
-        log.info("Logging %d samples every %d s → %s", TOTAL_SAMPLES, SAMPLE_INTERVAL_SEC, csv_path)
+        setup_gpio()
+        log.info(
+            "Starting real-time occupancy prediction. Interval=%ds  TotalSamples=%s",
+            SAMPLE_INTERVAL_SEC, TOTAL_SAMPLES if TOTAL_SAMPLES else "∞",
+        )
 
-        for sample_num in range(1, TOTAL_SAMPLES + 1):
-            log.info("── Sample %d / %d ──", sample_num, TOTAL_SAMPLES)
-            sample = collect_sample(dht_device)
-            write_row(csv_path, sample)
+        sample_num = 0
+        while True:
+            sample_num += 1
+            loop_start = time.monotonic()
 
-            if sample_num < TOTAL_SAMPLES:
-                log.info("Sleeping %d s until next sample…", SAMPLE_INTERVAL_SEC)
-                time.sleep(SAMPLE_INTERVAL_SEC)
+            sample  = collect_sample(dht_device)
+            payload = build_payload(sample)
 
-        log.info("Data collection complete. Pushing to GitHub…")
-        push_to_github(csv_path)
+            log.info("Sample %d → %s", sample_num, payload)
+            send_to_nodered(payload)
+
+            if TOTAL_SAMPLES and sample_num >= TOTAL_SAMPLES:
+                log.info("Reached TOTAL_SAMPLES=%d — stopping.", TOTAL_SAMPLES)
+                break
+
+            # Account for time already spent reading sensors / sending HTTP,
+            # so samples land close to every SAMPLE_INTERVAL_SEC, not interval + overhead.
+            elapsed = time.monotonic() - loop_start
+            sleep_for = max(0, SAMPLE_INTERVAL_SEC - elapsed)
+            time.sleep(sleep_for)
 
     except KeyboardInterrupt:
-        log.warning("Interrupted by user — pushing partial data to GitHub…")
-        push_to_github(csv_path)
+        log.warning("Interrupted by user — shutting down.")
 
     finally:
+        relay_off()
         dht_device.exit()
         GPIO.cleanup()
         log.info("GPIO cleaned up.")

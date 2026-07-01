@@ -9,7 +9,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-FIELDNAMES = ["timestamp", "motion_detected", "temperature_c", "humidity_pct", "audio_detected"]
+FIELDNAMES = ["timestamp", "motion_detected", "temperature_c", "humidity_pct", "audio_detected", "occupancy_predicted"]
 
 
 def init_csv(path: Path) -> None:
